@@ -1,0 +1,907 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<title>ESP32-S2 Merged BIN Flasher</title>
+
+<style>
+
+body {
+    font-family: Arial, sans-serif;
+    background: #111;
+    color: white;
+    max-width: 800px;
+    margin: 40px auto;
+    padding: 20px;
+}
+
+.box {
+    background: #1d1d1d;
+    border: 1px solid #444;
+    border-radius: 12px;
+    padding: 25px;
+    margin-bottom: 20px;
+}
+
+h1 {
+    margin-top: 0;
+}
+
+button {
+    padding: 12px 20px;
+    margin: 5px;
+    border-radius: 8px;
+    border: 1px solid #666;
+    background: #333;
+    color: white;
+    cursor: pointer;
+    font-size: 16px;
+}
+
+button:hover {
+    background: #555;
+}
+
+button:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+input {
+    padding: 12px;
+    background: #222;
+    color: white;
+    border: 1px solid #555;
+    border-radius: 7px;
+}
+
+progress {
+    width: 100%;
+    height: 25px;
+    margin-top: 15px;
+}
+
+pre {
+    background: #080808;
+    padding: 15px;
+    border-radius: 8px;
+    min-height: 180px;
+    white-space: pre-wrap;
+    overflow: auto;
+}
+
+.status {
+    margin-top: 15px;
+    font-size: 18px;
+}
+
+.info {
+    color: #aaa;
+}
+
+.warning {
+    color: #ffcc66;
+}
+
+</style>
+</head>
+
+
+<body>
+
+
+<div class="box">
+
+<h1>ESP32-S2 Merged BIN Flasher</h1>
+
+<p>
+Flashování kompletního
+<b>merged BIN</b>
+image do ESP32-S2 od adresy
+<b>0x0000</b>.
+</p>
+
+<p class="info">
+Použij Chrome nebo Edge a USB kabel s datovým přenosem.
+</p>
+
+<p class="warning">
+Pozor: Erase Flash smaže celý obsah flash paměti ESP32-S2.
+</p>
+
+</div>
+
+
+<div class="box">
+
+<h2>1. Vyber firmware</h2>
+
+<input
+    type="file"
+    id="firmware"
+    accept=".bin"
+>
+
+<p id="fileInfo">
+Žádný BIN nebyl vybrán.
+</p>
+
+</div>
+
+
+<div class="box">
+
+<h2>2. ESP32-S2</h2>
+
+<button id="connect">
+Připojit ESP32-S2
+</button>
+
+<button
+    id="erase"
+    disabled
+>
+Erase Flash
+</button>
+
+<button
+    id="flash"
+    disabled
+>
+Flash merged BIN
+</button>
+
+<button
+    id="reset"
+    disabled
+>
+Restart ESP32-S2
+</button>
+
+<progress
+    id="progress"
+    value="0"
+    max="100">
+</progress>
+
+<div
+    class="status"
+    id="status">
+Čekám na zařízení...
+</div>
+
+<pre id="log"></pre>
+
+</div>
+
+
+<script type="module">
+
+
+/*
+=========================================
+ESPTOOL-JS
+=========================================
+*/
+
+import {
+    ESPLoader,
+    Transport
+} from "https://unpkg.com/esptool-js/bundle.js";
+
+
+/*
+=========================================
+PROMĚNNÉ
+=========================================
+*/
+
+let loader = null;
+
+let transport = null;
+
+let port = null;
+
+
+/*
+=========================================
+ELEMENTY STRÁNKY
+=========================================
+*/
+
+const firmware =
+    document.getElementById("firmware");
+
+const fileInfo =
+    document.getElementById("fileInfo");
+
+const connectButton =
+    document.getElementById("connect");
+
+const eraseButton =
+    document.getElementById("erase");
+
+const flashButton =
+    document.getElementById("flash");
+
+const resetButton =
+    document.getElementById("reset");
+
+const progress =
+    document.getElementById("progress");
+
+const status =
+    document.getElementById("status");
+
+const log =
+    document.getElementById("log");
+
+
+/*
+=========================================
+LOG
+=========================================
+*/
+
+function writeLog(text) {
+
+    log.textContent += text + "\n";
+
+    log.scrollTop =
+        log.scrollHeight;
+
+}
+
+
+/*
+=========================================
+STATUS
+=========================================
+*/
+
+function setStatus(text) {
+
+    status.textContent = text;
+
+}
+
+
+/*
+=========================================
+VÝBĚR BIN
+=========================================
+*/
+
+firmware.addEventListener(
+    "change",
+    () => {
+
+        const file =
+            firmware.files[0];
+
+        if (!file) {
+
+            fileInfo.textContent =
+                "Žádný BIN nebyl vybrán.";
+
+            flashButton.disabled =
+                true;
+
+            return;
+
+        }
+
+
+        fileInfo.textContent =
+            file.name +
+            " — " +
+            file.size.toLocaleString() +
+            " bytes";
+
+
+        writeLog(
+            "Vybraný firmware: " +
+            file.name
+        );
+
+
+        writeLog(
+            "Velikost: " +
+            file.size.toLocaleString() +
+            " bytes"
+        );
+
+
+        if (loader) {
+
+            flashButton.disabled =
+                false;
+
+        }
+
+    }
+);
+
+
+/*
+=========================================
+PŘIPOJENÍ ESP32
+=========================================
+*/
+
+connectButton.addEventListener(
+    "click",
+    async () => {
+
+        try {
+
+            if (!("serial" in navigator)) {
+
+                throw new Error(
+                    "Web Serial není podporováno. Použij Chrome nebo Edge."
+                );
+
+            }
+
+
+            log.textContent = "";
+
+
+            setStatus(
+                "Vyber ESP32-S2 v USB okně..."
+            );
+
+
+            writeLog(
+                "Otevírám USB sériový port..."
+            );
+
+
+            port =
+                await navigator.serial.requestPort();
+
+
+            writeLog(
+                "USB port vybrán."
+            );
+
+
+            transport =
+                new Transport(
+                    port,
+                    true
+                );
+
+
+            loader =
+                new ESPLoader({
+
+                    transport:
+                        transport,
+
+                    baudrate:
+                        115200,
+
+                    terminal: {
+
+                        clean() {
+
+                            log.textContent =
+                                "";
+
+                        },
+
+                        write(data) {
+
+                            writeLog(
+                                String(data)
+                            );
+
+                        },
+
+                        writeLine(data) {
+
+                            writeLog(
+                                String(data)
+                            );
+
+                        }
+
+                    }
+
+                });
+
+
+            writeLog(
+                "Připojuji se k ESP32..."
+            );
+
+
+            const chip =
+                await loader.main();
+
+
+            writeLog(
+                "Detekovaný čip: " +
+                chip
+            );
+
+
+            setStatus(
+                "ESP32-S2 připojeno."
+            );
+
+
+            connectButton.disabled =
+                true;
+
+
+            eraseButton.disabled =
+                false;
+
+
+            resetButton.disabled =
+                false;
+
+
+            if (firmware.files[0]) {
+
+                flashButton.disabled =
+                    false;
+
+            }
+
+
+        }
+
+        catch (error) {
+
+            writeLog(
+                "CHYBA PŘIPOJENÍ: " +
+                (
+                    error.message ||
+                    error
+                )
+            );
+
+
+            setStatus(
+                "Připojení se nepodařilo."
+            );
+
+        }
+
+    }
+);
+
+
+/*
+=========================================
+ERASE FLASH
+=========================================
+*/
+
+eraseButton.addEventListener(
+    "click",
+    async () => {
+
+        try {
+
+            if (!loader) {
+
+                throw new Error(
+                    "ESP32-S2 není připojeno."
+                );
+
+            }
+
+
+            const confirmed =
+                confirm(
+                    "Opravdu chceš kompletně smazat flash ESP32-S2?"
+                );
+
+
+            if (!confirmed) {
+
+                writeLog(
+                    "Erase zrušen uživatelem."
+                );
+
+                return;
+
+            }
+
+
+            eraseButton.disabled =
+                true;
+
+            flashButton.disabled =
+                true;
+
+            connectButton.disabled =
+                true;
+
+            resetButton.disabled =
+                true;
+
+
+            progress.value =
+                0;
+
+
+            setStatus(
+                "Mažu celou flash..."
+            );
+
+
+            writeLog(
+                "--------------------------------"
+            );
+
+            writeLog(
+                "ERASE FLASH"
+            );
+
+            writeLog(
+                "Probíhá kompletní smazání flash..."
+            );
+
+
+            await loader.eraseFlash();
+
+
+            progress.value =
+                100;
+
+
+            writeLog(
+                "Flash byla kompletně smazána."
+            );
+
+
+            setStatus(
+                "Flash smazána."
+            );
+
+
+            if (firmware.files[0]) {
+
+                flashButton.disabled =
+                    false;
+
+            }
+
+
+        }
+
+        catch (error) {
+
+            writeLog(
+                "ERASE CHYBA: " +
+                (
+                    error.message ||
+                    error
+                )
+            );
+
+
+            setStatus(
+                "Mazání flash se nepodařilo."
+            );
+
+
+            if (firmware.files[0]) {
+
+                flashButton.disabled =
+                    false;
+
+            }
+
+        }
+
+        finally {
+
+            eraseButton.disabled =
+                false;
+
+            resetButton.disabled =
+                false;
+
+            connectButton.disabled =
+                true;
+
+        }
+
+    }
+);
+
+
+/*
+=========================================
+FLASH MERGED BIN
+=========================================
+*/
+
+flashButton.addEventListener(
+    "click",
+    async () => {
+
+        try {
+
+            if (!loader) {
+
+                throw new Error(
+                    "ESP32-S2 není připojeno."
+                );
+
+            }
+
+
+            const file =
+                firmware.files[0];
+
+
+            if (!file) {
+
+                throw new Error(
+                    "Nejdříve vyber BIN soubor."
+                );
+
+            }
+
+
+            const data =
+                new Uint8Array(
+                    await file.arrayBuffer()
+                );
+
+
+            progress.value =
+                0;
+
+
+            setStatus(
+                "Flashuji merged BIN..."
+            );
+
+
+            writeLog(
+                "--------------------------------"
+            );
+
+            writeLog(
+                "FLASH MERGED BIN"
+            );
+
+
+            writeLog(
+                "Soubor: " +
+                file.name
+            );
+
+
+            writeLog(
+                "Velikost: " +
+                data.length.toLocaleString() +
+                " bytes"
+            );
+
+
+            writeLog(
+                "Flash adresa: 0x0000"
+            );
+
+
+            writeLog(
+                "Flash size: 16MB"
+            );
+
+
+            writeLog(
+                "Spouštím flashování..."
+            );
+
+
+            /*
+            =========================================
+            FLASH
+            =========================================
+            */
+
+            await loader.writeFlash({
+
+                fileArray: [
+
+                    {
+                        address: 0x0000,
+                        data: data
+                    }
+
+                ],
+
+                flashMode:
+                    "dio",
+
+                flashFreq:
+                    "40m",
+
+                flashSize:
+                    "16MB",
+
+                eraseAll:
+                    false,
+
+                /*
+                Aktuálně vypnuto kvůli známému
+                problému s compressed writeFlash
+                v některých případech.
+                */
+
+                compress:
+                    false,
+
+                reportProgress:
+                    (
+                        fileIndex,
+                        written,
+                        total
+                    ) => {
+
+                        const percent =
+                            total > 0
+                                ?
+                                (
+                                    written /
+                                    total
+                                ) * 100
+                                :
+                                0;
+
+
+                        progress.value =
+                            percent;
+
+
+                        setStatus(
+                            "Flashuji: " +
+                            percent.toFixed(1) +
+                            " %"
+                        );
+
+                    }
+
+            });
+
+
+            writeLog(
+                "Flashování dokončeno."
+            );
+
+
+            progress.value =
+                100;
+
+
+            setStatus(
+                "Flash hotová – restartuji..."
+            );
+
+
+            try {
+
+                await loader.after(
+                    "hard_reset"
+                );
+
+                writeLog(
+                    "ESP32-S2 restartováno."
+                );
+
+            }
+
+            catch (resetError) {
+
+                writeLog(
+                    "Automatický reset se nepodařil: " +
+                    (
+                        resetError.message ||
+                        resetError
+                    )
+                );
+
+            }
+
+
+            setStatus(
+                "HOTOVO – ESP32-S2 restartováno."
+            );
+
+
+            writeLog(
+                "FLASH OK"
+            );
+
+        }
+
+        catch (error) {
+
+            writeLog(
+                "FLASH CHYBA: " +
+                (
+                    error.message ||
+                    error
+                )
+            );
+
+
+            setStatus(
+                "Flashování se nepodařilo."
+            );
+
+        }
+
+    }
+);
+
+
+/*
+=========================================
+RESET ESP32
+=========================================
+*/
+
+resetButton.addEventListener(
+    "click",
+    async () => {
+
+        try {
+
+            if (!loader) {
+
+                throw new Error(
+                    "ESP32-S2 není připojeno."
+                );
+
+            }
+
+
+            await loader.after(
+                "hard_reset"
+            );
+
+
+            writeLog(
+                "ESP32-S2 restartováno."
+            );
+
+
+            setStatus(
+                "ESP32-S2 restartováno."
+            );
+
+
+        }
+
+        catch (error) {
+
+            writeLog(
+                "RESET CHYBA: " +
+                (
+                    error.message ||
+                    error
+                )
+            );
+
+        }
+
+    }
+);
+
+
+</script>
+
+</body>
+</html>
